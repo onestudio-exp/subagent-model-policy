@@ -8,12 +8,7 @@
  */
 import { resolveSessionModel } from './lib/resolve-model.mjs';
 import { writeSessionModel } from './lib/state.mjs';
-
-async function readStdin() {
-  const chunks = [];
-  for await (const chunk of process.stdin) chunks.push(chunk);
-  return Buffer.concat(chunks).toString('utf8');
-}
+import { readStdin } from './lib/stdin.mjs';
 
 async function main() {
   const raw = await readStdin();

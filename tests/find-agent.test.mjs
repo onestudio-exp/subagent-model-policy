@@ -102,6 +102,26 @@ test('a missing definition returns null so the caller fails open', () => {
   assert.equal(readAgentPolicy('Explore', root, root), null, 'built-ins have no file on disk');
 });
 
+// --- M5: built-ins short-circuit before any filesystem walk ----------------
+
+test('every known built-in short-circuits to null without touching the filesystem', () => {
+  const root = tmp();
+  const home = tmp();
+  for (const name of ['Explore', 'Plan', 'general-purpose', 'claude', 'statusline-setup']) {
+    assert.equal(readAgentPolicy(name, root, home), null);
+    // Case-insensitive: matching either case is strictly safer than under-matching.
+    assert.equal(readAgentPolicy(name.toUpperCase(), root, home), null);
+  }
+});
+
+test('a plugin-qualified name sharing a built-in\'s name is not short-circuited — it is a real agent', () => {
+  const root = tmp();
+  const home = tmp();
+  writePluginFile(home, 'marketplace-a', 'some-plugin', '1.0.0', 'agents', 'Explore', 'name: Explore\nmodel: haiku');
+  const got = readAgentPolicy('some-plugin:Explore', root, home);
+  assert.equal(got?.model, 'haiku', 'a plugin: qualified lookup must still resolve normally, even for a built-in-like name');
+});
+
 test('a blank or non-string subagent type returns null without throwing', () => {
   const root = tmp();
   assert.equal(readAgentPolicy('', root, root), null);

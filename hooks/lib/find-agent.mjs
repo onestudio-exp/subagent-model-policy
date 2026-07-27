@@ -132,6 +132,23 @@ function resolveHomeDir(homeDir) {
 }
 
 /**
+ * Built-in subagent types resolve to no definition file on disk (Claude
+ * Code implements them internally) and so always fail open regardless of
+ * what gets searched. Without this, a lookup for one still paid for a full
+ * plugin-cache walk only to land on the same null — measured at ~70-90ms
+ * per call against this machine's real `~/.claude/plugins/cache` (~1300
+ * agent/command/skill files across several marketplaces; see M5 in the
+ * final-fix report). Compared case-insensitively, since Windows and macOS
+ * default to case-insensitive filesystems and matching either case is
+ * strictly safer than under-matching a reserved name.
+ *
+ * Only applies to a bare (unqualified) lookup: a `plugin:Explore`-style
+ * qualified name is a real plugin agent that merely shares the name, not
+ * this built-in, and must still go through the normal search.
+ */
+const BUILTIN_AGENT_TYPES = new Set(['explore', 'plan', 'general-purpose', 'claude', 'statusline-setup']);
+
+/**
  * Resolve a subagent type to its definition file, in Claude Code's own
  * precedence order: project, then user, then plugin cache.
  * Returns null for built-ins, which have no file on disk.
@@ -145,6 +162,8 @@ export function findAgentFile(subagentType, cwd, homeDir) {
   const name = parts[parts.length - 1].trim();
   if (!name) return null;
   const pluginQualifier = parts.length > 1 ? parts[0].trim() || null : null;
+
+  if (!pluginQualifier && BUILTIN_AGENT_TYPES.has(name.toLowerCase())) return null;
 
   const home = resolveHomeDir(homeDir);
 

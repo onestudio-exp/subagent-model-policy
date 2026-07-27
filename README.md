@@ -54,7 +54,14 @@ model-policy: pinned
 ---
 ```
 
-A pin is final. Everything else follows the session.
+A pin is final. Everything else follows the session — **including an
+explicit `model` passed on the individual `Agent(...)` call itself.** If you
+dispatch a subagent with `model: "opus"` right there in the call, and its
+definition isn't pinned, the policy rewrites that too. This is intentional
+(the whole point is that accidental model choices don't survive), but it does
+mean the Agent tool's own optional per-invocation override is not a way
+around the policy — only `model-policy: pinned` on the agent's own
+definition is.
 
 ## Checking it works
 

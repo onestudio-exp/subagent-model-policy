@@ -18,12 +18,7 @@
 import { normalizeModel, modelFromTranscript } from './lib/resolve-model.mjs';
 import { readSessionModel } from './lib/state.mjs';
 import { readAgentPolicy } from './lib/find-agent.mjs';
-
-async function readStdin() {
-  const chunks = [];
-  for await (const chunk of process.stdin) chunks.push(chunk);
-  return Buffer.concat(chunks).toString('utf8');
-}
+import { readStdin } from './lib/stdin.mjs';
 
 /**
  * Resolve the session model as it stands right now, at dispatch time:
