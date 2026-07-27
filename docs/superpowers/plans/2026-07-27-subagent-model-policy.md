@@ -356,7 +356,10 @@ Expected: FAIL — `resolveSessionModel is not a function`
 
 - [ ] **Step 3: Write minimal implementation**
 
-Append to `hooks/lib/resolve-model.mjs`:
+Append the functions below to `hooks/lib/resolve-model.mjs`. **Hoist the three
+`import` lines to the top of the file, above the existing `ALIASES` export** —
+they are shown here with the code they serve, but ESM imports belong at the top
+and a reviewer will flag them mid-file.
 
 ```js
 import { readFileSync, statSync, openSync, readSync, closeSync } from 'node:fs';
@@ -1436,13 +1439,11 @@ Create `tests/doctor.test.mjs`:
 ```js
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { runHook } from './helpers/run-hook.mjs';
+import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
