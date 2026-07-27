@@ -197,3 +197,42 @@ resolved at rung 3. The spec called the `SessionStart` `model` field "not
 guaranteed to be present"; in practice, on this build, it was absent. The
 fallback ladder is not defensive padding — it is the thing actually doing the
 work.
+
+## 6. The weak-source rule, verified live
+
+Added after the final review found the plugin could downgrade a subagent below
+the session model. This is the run that proves the fix, in the failing scenario.
+
+Setup: project `settings.json` says `sonnet`; the real session runs on
+`--model opus`; agent `architect` **deliberately** declares `model: opus` and is
+not pinned. Transcript state captured at hook fire time by a spy hook running
+alongside the real one:
+
+```json
+{"tool":"Agent","tp_present":true,"exists":true,"bytes":49038,"assistantModels":[]}
+```
+
+The transcript exists with content but no assistant turn — so the session model
+resolved from `settings.json`, a **weak** source, and weakly said `sonnet`.
+
+| Agent | Declares | Pinned | Session source | Actually ran on |
+| --- | --- | --- | --- | --- |
+| `architect` | `opus` | no | **weak** = `sonnet` | **`claude-opus-5`** — no downgrade |
+| `drifter` | `sonnet` | no | `opus` | **`claude-opus-5`** — upgraded |
+| `pinned-agent` | `sonnet` | **yes** | — | **`claude-sonnet-5`** — pin final |
+
+`architect`'s `.meta.json` carries no `model` key at all: the hook declined to
+act, and the deliberate `opus` survived. Before the fix this same run produced
+`claude-sonnet-5`, labelled `(inherit)`.
+
+### Known residual: the transcript is strong but stale
+
+Assistant turns flush *after* a turn completes, so rung 2 always reports the
+**previous** turn's model. On the first dispatch after a mid-session `/model`
+upgrade — or under `--resume --model opus` over a transcript whose last assistant
+turn was `sonnet` — the hook sees `sonnet` from a source §6 designates *strong*,
+and may therefore downgrade a deliberate `model: opus`.
+
+The window is a single dispatch and it is spec-sanctioned, but it is the one
+remaining path to the original harm shape and is recorded here rather than left
+implicit.
