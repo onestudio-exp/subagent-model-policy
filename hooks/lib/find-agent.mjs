@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { normalizeModel } from './resolve-model.mjs';
 
 /**
@@ -81,27 +81,39 @@ function collectPluginAgentMatches(dir, name, depth, insideAgents, results) {
   }
 }
 
-/** True when `segment` appears as a whole path component of `path`. */
-function hasPathSegment(path, segment) {
-  if (!segment) return false;
-  return path.split(/[\\/]+/).includes(segment);
+/**
+ * True when `filePath` sits under `pluginName`'s own plugin directory inside
+ * the plugin-cache `root`. Cache layout is
+ * `<root>/<marketplace>/<plugin>/<version>/...`, so relative to `root` the
+ * plugin name is always at index 1 (index 0 is the marketplace) — confirmed
+ * against a real `~/.claude/plugins/cache` (e.g.
+ * `claude-plugins-official/vercel/0.45.1/agents/...`). Checking only that
+ * index — never "does this string appear anywhere in the path" — is what
+ * keeps a marketplace that happens to be *named* after another plugin from
+ * being mistaken for it. Compared case-insensitively (Windows and macOS
+ * default to case-insensitive filesystems), and `relative()`'s own separator
+ * is split defensively on both `/` and `\`.
+ */
+function isUnderPlugin(root, filePath, pluginName) {
+  if (!pluginName) return false;
+  const segments = relative(root, filePath).split(/[\\/]+/);
+  return segments[1] !== undefined && segments[1].toLowerCase() === pluginName.toLowerCase();
 }
 
 /**
  * Search the plugin cache for `<name>.md` under an `agents/` directory.
  * When `pluginQualifier` is given (a `plugin:agent`-style lookup), a match
- * whose path runs through that plugin's own subtree wins; only when no such
- * match exists does the search fall back to any `agents/` match at all — so
- * an explicitly-qualified lookup never resolves to a different plugin's
- * same-named agent. Cache layout is `<marketplace>/<plugin>/<version>/...`,
- * so the plugin name is matched as a path segment rather than a fixed depth.
+ * inside that plugin's own directory (relative index 1 under `root`) wins;
+ * only when no such match exists does the search fall back to any
+ * `agents/` match at all — so an explicitly-qualified lookup never resolves
+ * to a different plugin's same-named agent.
  */
 function findInPluginCache(root, name, pluginQualifier) {
   const matches = [];
   collectPluginAgentMatches(root, name, 0, false, matches);
   if (matches.length === 0) return null;
   if (pluginQualifier) {
-    const qualified = matches.find((path) => hasPathSegment(path, pluginQualifier));
+    const qualified = matches.find((path) => isUnderPlugin(root, path, pluginQualifier));
     if (qualified) return qualified;
   }
   return matches[0];

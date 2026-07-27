@@ -145,3 +145,25 @@ test('plugin scope: a bare, unqualified name resolves when it exists only in the
   writePluginFile(home, 'marketplace-a', 'solo-plugin', '2.0.0', 'agents', 'lonely', 'name: lonely\nmodel: sonnet');
   assert.equal(readAgentPolicy('lonely', root, home).model, 'sonnet');
 });
+
+test('plugin scope: qualifier matches the plugin segment specifically, not a marketplace merely named after another plugin', () => {
+  const root = tmp();
+  const home = tmp();
+  // A marketplace that happens to be named "plugin-b", hosting an unrelated
+  // plugin "plugin-a" — the string "plugin-b" appears in this path, but only
+  // as the marketplace segment, never as the plugin segment. Named so it
+  // sorts (and so is enumerated) ahead of the marketplace below on this
+  // filesystem's directory order — confirmed empirically — so a check that
+  // merely tested "does 'plugin-b' appear anywhere in the path" would return
+  // this wrong match first, rather than passing by enumeration-order luck.
+  writePluginFile(home, 'plugin-b', 'plugin-a', '1.0.0', 'agents', 'scanner', 'name: scanner\nmodel: sonnet');
+  // The real "plugin-b" plugin, shipped under an unrelated marketplace name.
+  writePluginFile(home, 'unrelated-marketplace', 'plugin-b', '1.0.0', 'agents', 'scanner', 'name: scanner\nmodel: haiku');
+
+  const got = readAgentPolicy('plugin-b:scanner', root, home);
+  assert.equal(got.model, 'haiku', 'must resolve to the real plugin-b plugin, not a marketplace merely named plugin-b');
+  assert.ok(
+    got.path.includes(join('unrelated-marketplace', 'plugin-b')),
+    `expected path to run through unrelated-marketplace/plugin-b, got ${got.path}`,
+  );
+});
