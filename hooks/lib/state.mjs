@@ -1,13 +1,25 @@
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { safeHomeDir } from './safe-home.mjs';
 
-/** Where per-session model state lives. Overridable for tests. */
+/**
+ * Where per-session model state lives. Overridable for tests.
+ *
+ * Must never throw — callers such as `doctor.mjs` read it at module scope,
+ * outside any try, precisely because it's a diagnostic tool that must not
+ * itself crash on the condition it exists to diagnose. `safeHomeDir()`
+ * already guards against a throwing `homedir()`; if that still leaves us
+ * with no home directory, fall back to `tmpdir()` (which Node itself
+ * guarantees not to throw) rather than ever joining a null path.
+ */
 export function stateDir() {
-  return (
-    process.env.SUBAGENT_MODEL_POLICY_STATE_DIR ||
-    join(homedir(), '.claude', 'subagent-model-policy', 'sessions')
-  );
+  if (process.env.SUBAGENT_MODEL_POLICY_STATE_DIR) {
+    return process.env.SUBAGENT_MODEL_POLICY_STATE_DIR;
+  }
+  const home = safeHomeDir();
+  if (home) return join(home, '.claude', 'subagent-model-policy', 'sessions');
+  return join(tmpdir(), 'subagent-model-policy', 'sessions');
 }
 
 /** Flatten a session id to a safe single filename — no path traversal. */

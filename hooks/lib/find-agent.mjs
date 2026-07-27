@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join, relative } from 'node:path';
 import { normalizeModel } from './resolve-model.mjs';
+import { safeHomeDir } from './safe-home.mjs';
 
 /**
  * Parse the leading `---` frontmatter block into a flat key/value map.
@@ -123,18 +123,12 @@ function findInPluginCache(root, name, pluginQualifier) {
 }
 
 /**
- * `homedir()` is a real production path whenever `homeDir` isn't supplied,
- * and it can throw if neither `HOME`/`USERPROFILE` nor the OS lookup
- * resolves. Failing open means treating that as "no user scope available",
- * never propagating the throw.
+ * `homeDir` is a test override; production callers omit it and get the
+ * real (guarded) home directory from the shared `safeHomeDir()` helper,
+ * which never throws even if `homedir()` itself would.
  */
-function safeHomeDir(homeDir) {
-  if (homeDir) return homeDir;
-  try {
-    return homedir();
-  } catch {
-    return null;
-  }
+function resolveHomeDir(homeDir) {
+  return homeDir || safeHomeDir();
 }
 
 /**
@@ -152,7 +146,7 @@ export function findAgentFile(subagentType, cwd, homeDir) {
   if (!name) return null;
   const pluginQualifier = parts.length > 1 ? parts[0].trim() || null : null;
 
-  const home = safeHomeDir(homeDir);
+  const home = resolveHomeDir(homeDir);
 
   const projectAndUserRoots = [
     cwd && join(cwd, '.claude', 'agents'),

@@ -4,7 +4,18 @@ import { existsSync, readdirSync } from 'node:fs';
 import { stateDir, readSessionModel } from './lib/state.mjs';
 
 const sessionId = process.argv[2];
-const dir = stateDir();
+
+// stateDir() is built not to throw (see lib/state.mjs), but this call sits
+// at module scope, outside any other try/catch — a diagnostic tool must
+// never itself crash on the condition it exists to diagnose, so guard it
+// directly rather than trust that invariant transitively.
+let dir;
+try {
+  dir = stateDir();
+} catch {
+  dir = null;
+}
+
 const rows = [];
 let healthy = true;
 
@@ -13,7 +24,8 @@ function row(label, status, detail, gates = true) {
   if (gates && status !== 'ok') healthy = false;
 }
 
-row('state directory', existsSync(dir) ? 'ok' : 'FAIL', dir);
+row('state directory', dir && existsSync(dir) ? 'ok' : 'FAIL',
+  dir ?? '(unavailable — the home/state directory could not be determined)');
 
 if (!sessionId) {
   row('session id', 'FAIL',
