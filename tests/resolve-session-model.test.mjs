@@ -81,3 +81,42 @@ test('a missing transcript path is skipped silently', () => {
   const got = resolveSessionModel({ transcriptPath: join(dir, 'nope.jsonl'), cwd: dir, homeDir: dir });
   assert.deepEqual(got, { model: 'haiku', source: 'settings' });
 });
+
+test('rung 2: a sidechain (subagent) entry is skipped in favor of the main-session entry', () => {
+  const dir = tmp();
+  const transcript = writeTranscript(dir, [
+    { type: 'assistant', message: { model: 'claude-opus-5' } },
+    { type: 'assistant', isSidechain: true, message: { model: 'claude-haiku-4-5-20251001' } },
+  ]);
+  const got = resolveSessionModel({ transcriptPath: transcript, cwd: dir, homeDir: dir });
+  assert.deepEqual(got, { model: 'opus', source: 'transcript' }, 'the sidechain turn must not be read as the session model');
+});
+
+test('rung 2: a trailing non-assistant entry does not block the last assistant model', () => {
+  const dir = tmp();
+  const transcript = writeTranscript(dir, [
+    { type: 'assistant', message: { model: 'claude-sonnet-5' } },
+    { type: 'user', message: { content: 'thanks' } },
+  ]);
+  const got = resolveSessionModel({ transcriptPath: transcript, cwd: dir, homeDir: dir });
+  assert.deepEqual(got, { model: 'sonnet', source: 'transcript' });
+});
+
+test('rung 2: stops at the first assistant entry even when its model does not normalize, never falling back to an older one', () => {
+  const dir = tmp();
+  const transcript = writeTranscript(dir, [
+    { type: 'assistant', message: { model: 'claude-opus-5' } },
+    { type: 'assistant', message: { model: 'claude-neptune-9' } },
+  ]);
+  writeSettings(dir, '.claude/settings.json', { model: 'haiku' });
+  const got = resolveSessionModel({ transcriptPath: transcript, cwd: dir, homeDir: dir });
+  assert.deepEqual(got, { model: 'haiku', source: 'settings' }, 'must not resurrect the older opus entry');
+});
+
+test('rung 2: a final transcript line beyond the 256 KiB window is still read', () => {
+  const dir = tmp();
+  const padding = 'x'.repeat(300 * 1024);
+  const transcript = writeTranscript(dir, [{ type: 'assistant', message: { model: 'claude-opus-5' }, padding }]);
+  const got = resolveSessionModel({ transcriptPath: transcript, cwd: dir, homeDir: dir });
+  assert.deepEqual(got, { model: 'opus', source: 'transcript' });
+});

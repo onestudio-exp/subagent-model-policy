@@ -30,23 +30,34 @@ function tailFile(path, maxBytes = 262144) {
   const length = size - start;
   const buf = Buffer.alloc(length);
   const fd = openSync(path, 'r');
+  let bytesRead = 0;
   try {
-    readSync(fd, buf, 0, length, start);
+    bytesRead = readSync(fd, buf, 0, length, start);
   } finally {
     closeSync(fd);
   }
-  return buf.toString('utf8');
+  return buf.subarray(0, bytesRead).toString('utf8');
 }
 
-/** Last assistant-message model recorded in a transcript JSONL, or null. */
-function modelFromTranscript(transcriptPath) {
-  if (!transcriptPath) return null;
-  let text;
-  try {
-    text = tailFile(transcriptPath);
-  } catch {
-    return null;
-  }
+/**
+ * Widening tail windows tried in order when hunting for the transcript's
+ * last assistant turn. A window that already covers the whole file is the
+ * last one tried — there is nothing to gain from re-reading at a larger size.
+ */
+const TRANSCRIPT_WINDOW_BYTES = [262144, 2097152];
+
+/**
+ * Scan `text` — a tail slice of transcript JSONL — bottom-up for the
+ * session's last assistant turn: the first entry, scanning from the end,
+ * that is neither a sidechain (subagent) turn nor a non-assistant message.
+ * Stops there regardless of whether its model normalizes — an older turn is
+ * never "the session's model", even when the last one turns out unusable.
+ *
+ * Returns `{ found: false }` when no qualifying entry appears in this slice
+ * (it may still exist further back, outside the window), or
+ * `{ found: true, model }` once one is located (`model` may be null).
+ */
+function lastAssistantModel(text) {
   const lines = text.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
@@ -57,8 +68,42 @@ function modelFromTranscript(transcriptPath) {
     } catch {
       continue; // truncated first line, or a partial write
     }
-    const model = normalizeModel(entry?.message?.model ?? entry?.model);
-    if (model) return model;
+    const isSidechain = Boolean(entry?.isSidechain) || Boolean(entry?.message?.isSidechain);
+    if (isSidechain) continue; // a subagent turn, not the session's own
+    if (entry?.type !== 'assistant') continue;
+    return { found: true, model: normalizeModel(entry?.message?.model ?? entry?.model) };
+  }
+  return { found: false, model: null };
+}
+
+/**
+ * Last assistant-message model recorded in a transcript JSONL, or null.
+ * Grows the tail window (256 KiB, then 2 MiB, then the whole file) so a
+ * huge final line isn't cut off before its `model` key — stopping as soon
+ * as a window yields a qualifying entry, or once a window already covers
+ * the whole file.
+ */
+function modelFromTranscript(transcriptPath) {
+  if (!transcriptPath) return null;
+  let size;
+  try {
+    size = statSync(transcriptPath).size;
+  } catch {
+    return null;
+  }
+
+  const windows = [...TRANSCRIPT_WINDOW_BYTES, size];
+  for (const maxBytes of windows) {
+    const coversWholeFile = maxBytes >= size;
+    let text;
+    try {
+      text = tailFile(transcriptPath, maxBytes);
+    } catch {
+      return null;
+    }
+    const result = lastAssistantModel(text);
+    if (result.found) return result.model;
+    if (coversWholeFile) break;
   }
   return null;
 }
