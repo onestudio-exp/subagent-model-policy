@@ -1,0 +1,225 @@
+import { readFileSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { join } from 'node:path';
+import { safeHomeDir } from './safe-home.mjs';
+
+/** Model aliases the Agent tool's `model` parameter accepts. */
+export const ALIASES = ['opus', 'sonnet', 'haiku', 'fable'];
+
+/**
+ * Normalize any model identifier to an alias the Agent tool accepts.
+ * Returns null for anything unrecognised, so callers fail open rather than
+ * emitting a value the tool would reject.
+ */
+export function normalizeModel(value) {
+  if (typeof value !== 'string') return null;
+  const v = value.trim().toLowerCase();
+  if (!v) return null;
+  if (ALIASES.includes(v)) return v;
+  // A context-window variant suffix (e.g. "sonnet[1m]") names the same
+  // model family, so it collapses to the base alias rather than failing
+  // open. Deliberately narrow: only a bare alias immediately followed by a
+  // bracketed suffix qualifies — "opusplan" and "default" are NOT this
+  // shape and must keep falling through to null below (see spec Fix 2:
+  // "opusplan" means opus-for-planning/sonnet-otherwise and cannot be
+  // honestly collapsed to one alias; "default" names no specific model).
+  const contextWindowVariant = /^([a-z]+)\[[^\]]*\]$/.exec(v);
+  if (contextWindowVariant && ALIASES.includes(contextWindowVariant[1])) return contextWindowVariant[1];
+  // Beyond a bare alias, only treat it as a Claude model ID if it says so.
+  if (!v.includes('claude')) return null;
+  for (const alias of ALIASES) {
+    if (new RegExp(`(^|[^a-z])${alias}([^a-z]|$)`).test(v)) return alias;
+  }
+  return null;
+}
+
+/**
+ * Relative cost rank of a ranked alias — higher is more capable/expensive.
+ * `fable` is deliberately absent: it is a different *kind* of model, not a
+ * cheaper or dearer point on this scale (spec §6, "Source strength, and why
+ * the transcript is not enough").
+ */
+const RANK = { haiku: 1, sonnet: 2, opus: 3 };
+
+/** Rank of a normalized alias, or null when unranked (`fable`) or unrecognised. */
+export function rankOf(alias) {
+  return Object.prototype.hasOwnProperty.call(RANK, alias) ? RANK[alias] : null;
+}
+
+/**
+ * Session-model sources carry a strength (spec §6): `transcript` and
+ * `session-start` are **strong** — an observation of the session's real
+ * model. `settings` is **weak** — configuration, not observation, and stale
+ * under `--model` or `/model`.
+ */
+const STRONG_SOURCES = new Set(['transcript', 'session-start']);
+
+/**
+ * Strength of a session-model source. An unrecognised source (e.g. a state
+ * file written by some other version of this plugin) is treated as weak —
+ * the conservative default, since the harm this policy exists to prevent is
+ * a downgrade, and an unrecognised source carries no proof against one.
+ */
+export function sourceStrength(source) {
+  return STRONG_SOURCES.has(source) ? 'strong' : 'weak';
+}
+
+/**
+ * Decide whether the hook may rewrite a subagent's effective model to the
+ * session model, given the strength of the source that produced the session
+ * model (spec §6, "Source strength"):
+ *
+ *   strong source -> may always rewrite (equality is the caller's concern)
+ *   weak source   -> may rewrite only if doing so does not move to a
+ *                     cheaper model: rank(sessionModel) >= rank(effective)
+ *
+ * `fable` is unranked. If either side of a *weak*-source comparison is
+ * `fable`, this returns false — inventing an ordering against an unranked
+ * model would be a claim this plugin cannot make. A strong source carries no
+ * such exemption: it needs no rank to justify a rewrite, so it may rewrite to
+ * or from `fable` exactly as it may rewrite to or from any other model.
+ *
+ * `sessionModel` and `effective` must already be normalized aliases.
+ */
+export function mayRewrite(source, sessionModel, effective) {
+  if (sourceStrength(source) === 'strong') return true;
+  const sessionRank = rankOf(sessionModel);
+  const effectiveRank = rankOf(effective);
+  if (sessionRank === null || effectiveRank === null) return false;
+  return sessionRank >= effectiveRank;
+}
+
+/** Read at most the final `maxBytes` of a file, as UTF-8. */
+function tailFile(path, maxBytes = 262144) {
+  const size = statSync(path).size;
+  const start = Math.max(0, size - maxBytes);
+  const length = size - start;
+  const buf = Buffer.alloc(length);
+  const fd = openSync(path, 'r');
+  let bytesRead = 0;
+  try {
+    bytesRead = readSync(fd, buf, 0, length, start);
+  } finally {
+    closeSync(fd);
+  }
+  return buf.subarray(0, bytesRead).toString('utf8');
+}
+
+/**
+ * Widening tail windows tried in order when hunting for the transcript's
+ * last assistant turn. A window that already covers the whole file is the
+ * last one tried — there is nothing to gain from re-reading at a larger size.
+ */
+const TRANSCRIPT_WINDOW_BYTES = [262144, 2097152];
+
+/**
+ * Scan `text` — a tail slice of transcript JSONL — bottom-up for the
+ * session's last assistant turn: the first entry, scanning from the end,
+ * that is neither a sidechain (subagent) turn nor a non-assistant message.
+ * Stops there regardless of whether its model normalizes — an older turn is
+ * never "the session's model", even when the last one turns out unusable.
+ *
+ * Returns `{ found: false }` when no qualifying entry appears in this slice
+ * (it may still exist further back, outside the window), or
+ * `{ found: true, model }` once one is located (`model` may be null).
+ */
+function lastAssistantModel(text) {
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line.startsWith('{')) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue; // truncated first line, or a partial write
+    }
+    const isSidechain = Boolean(entry?.isSidechain) || Boolean(entry?.message?.isSidechain);
+    if (isSidechain) continue; // a subagent turn, not the session's own
+    if (entry?.type !== 'assistant') continue;
+    return { found: true, model: normalizeModel(entry?.message?.model ?? entry?.model) };
+  }
+  return { found: false, model: null };
+}
+
+/**
+ * Last assistant-message model recorded in a transcript JSONL, or null.
+ * Grows the tail window (256 KiB, then 2 MiB, then the whole file) so a
+ * huge final line isn't cut off before its `model` key — stopping as soon
+ * as a window yields a qualifying entry, or once a window already covers
+ * the whole file.
+ *
+ * This is rung 2 of the ladder, and — since the corrected 2026-07-27
+ * design (spec §5/§6) — the *primary* source at `PreToolUse` dispatch time,
+ * not merely a fallback consulted at `SessionStart`. Exported so
+ * `enforce-subagent-model.mjs` can resolve the session model fresh at
+ * dispatch time instead of trusting only the `SessionStart` cache, which
+ * structurally cannot see rung 1 or rung 2 at the moment it runs.
+ */
+export function modelFromTranscript(transcriptPath) {
+  if (!transcriptPath) return null;
+  let size;
+  try {
+    size = statSync(transcriptPath).size;
+  } catch {
+    return null;
+  }
+
+  const windows = [...TRANSCRIPT_WINDOW_BYTES, size];
+  for (const maxBytes of windows) {
+    const coversWholeFile = maxBytes >= size;
+    let text;
+    try {
+      text = tailFile(transcriptPath, maxBytes);
+    } catch {
+      return null;
+    }
+    const result = lastAssistantModel(text);
+    if (result.found) return result.model;
+    if (coversWholeFile) break;
+  }
+  return null;
+}
+
+/** First `model` key found across project then user settings, or null. */
+function modelFromSettings(cwd, homeDir) {
+  // `homeDir` is a test override; production callers get the real (guarded)
+  // home directory from the shared safeHomeDir(), which fails open to null
+  // rather than propagating a throwing homedir().
+  const home = homeDir || safeHomeDir();
+  const candidates = [
+    cwd && join(cwd, '.claude', 'settings.local.json'),
+    cwd && join(cwd, '.claude', 'settings.json'),
+    home && join(home, '.claude', 'settings.json'),
+  ].filter(Boolean);
+
+  for (const path of candidates) {
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf8'));
+      if (parsed && typeof parsed === 'object') {
+        const model = normalizeModel(parsed.model);
+        if (model) return model;
+      }
+    } catch {
+      continue; // missing or corrupt — try the next candidate
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve the session's model. Stops at the first source that yields a
+ * usable value; later sources are not consulted. Returns null when every
+ * source misses, so the caller fails open.
+ */
+export function resolveSessionModel({ model, transcriptPath, cwd, homeDir } = {}) {
+  const direct = normalizeModel(model);
+  if (direct) return { model: direct, source: 'session-start' };
+
+  const fromTranscript = modelFromTranscript(transcriptPath);
+  if (fromTranscript) return { model: fromTranscript, source: 'transcript' };
+
+  const fromSettings = modelFromSettings(cwd, homeDir);
+  if (fromSettings) return { model: fromSettings, source: 'settings' };
+
+  return null;
+}

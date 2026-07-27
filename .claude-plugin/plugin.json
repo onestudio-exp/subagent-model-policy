@@ -1,0 +1,8 @@
+{
+  "name": "subagent-model-policy",
+  "version": "0.1.0",
+  "description": "Keeps Claude Code subagents on the same model as your session. Subagents inherit the session model unless explicitly pinned with `model-policy: pinned`.",
+  "author": {
+    "name": "OneStudio"
+  }
+}

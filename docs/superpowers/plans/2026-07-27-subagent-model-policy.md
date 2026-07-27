@@ -19,6 +19,10 @@
 - **Model aliases emitted to the Agent tool must be one of** `opus`, `sonnet`, `haiku`, `fable`. Never emit a full model ID. (Spec §6)
 - **All model identifiers are normalized before any comparison or emission**, on both sides. (Spec §6)
 - **ESM only.** `"type": "module"` in `package.json`; all files `.mjs`.
+- **Full suite runs as `npm test`**, which is `node --test tests/*.mjs`. A bare
+  `node --test tests/` fails on Node 25 + Windows — the runner treats the
+  directory as a test file and reports a synthetic failure. Node expands the
+  glob itself, so this works under `cmd`, PowerShell, and POSIX shells alike.
 - **State directory is overridable** via `SUBAGENT_MODEL_POLICY_STATE_DIR` so tests never touch the real `~/.claude`.
 
 ---
@@ -356,7 +360,10 @@ Expected: FAIL — `resolveSessionModel is not a function`
 
 - [ ] **Step 3: Write minimal implementation**
 
-Append to `hooks/lib/resolve-model.mjs`:
+Append the functions below to `hooks/lib/resolve-model.mjs`. **Hoist the three
+`import` lines to the top of the file, above the existing `ALIASES` export** —
+they are shown here with the code they serve, but ESM imports belong at the top
+and a reviewer will flag them mid-file.
 
 ```js
 import { readFileSync, statSync, openSync, readSync, closeSync } from 'node:fs';
@@ -1260,7 +1267,7 @@ main().catch(() => {}).finally(() => process.exit(0));
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `npm test`
-Expected: PASS — all suites green, 14 tests in this file
+Expected: PASS — all suites green, 13 tests in this file
 
 - [ ] **Step 5: Commit**
 
@@ -1436,13 +1443,11 @@ Create `tests/doctor.test.mjs`:
 ```js
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { runHook } from './helpers/run-hook.mjs';
+import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 

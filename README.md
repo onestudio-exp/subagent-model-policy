@@ -33,6 +33,14 @@ Agent(Explore)
   ↳ model policy: sonnet → opus (inherit)
 ```
 
+Sometimes the session model can only be inferred from `settings.json` rather
+than observed directly (the session's own report, or the transcript). That
+inference is weaker — `settings.json` goes stale under `--model` and
+`/model` — so in that case the policy still **upgrades** an agent that
+declares a cheaper model, but it will never rewrite a declaration to
+something cheaper on that evidence alone. A downgrade it caused would be the
+exact harm this plugin exists to prevent.
+
 ## Install
 
 ```
@@ -54,16 +62,54 @@ model-policy: pinned
 ---
 ```
 
-A pin is final. Everything else follows the session.
+A pin is final. Everything else follows the session — **including an
+explicit `model` passed on the individual `Agent(...)` call itself.** If you
+dispatch a subagent with `model: "opus"` right there in the call, and its
+definition isn't pinned, the policy rewrites that too. This is intentional
+(the whole point is that accidental model choices don't survive), but it does
+mean the Agent tool's own optional per-invocation override is not a way
+around the policy — only `model-policy: pinned` on the agent's own
+definition is.
 
 ## Checking it works
 
 ```
-/subagent-model doctor
+/subagent-model-policy:subagent-model
 ```
 
+Plugin commands are namespaced `plugin:command`, so the bare `/subagent-model`
+will not resolve. The name is verified against an actual install, not inferred.
+
 Verifies the hooks are registered, the session model was detected, and the state
-file is being written.
+file is being written. Exits `0` when the policy is live, `1` when it is not.
+
+If it reports `session model FAIL`, the plugin was almost certainly installed
+mid-session — `SessionStart` had already run, so nothing was captured. Start a
+fresh session.
+
+## Verified behaviour
+
+Both directions were confirmed end to end against Claude Code 2.1.220, reading
+the model each subagent actually ran on from its own transcript — not by asking
+the subagent, which cannot reliably report its own identity:
+
+| Agent frontmatter | Pinned? | Actually ran on |
+| --- | --- | --- |
+| `model: sonnet` | no | **opus** — redirected to the session model |
+| `model: sonnet` | **yes** | **sonnet** — pin honoured |
+
+Two facts about the mechanism were also settled by live check rather than
+assumption, and they are why the plugin is shaped the way it is:
+
+- The subagent tool reports its name as **`Agent`**, not `Task`. The shipped
+  matcher covers both.
+- `updatedInput` applies **without** `permissionDecision`. That matters for
+  safety: sending `permissionDecision: "allow"` would auto-approve every Agent
+  call and silently widen permissions. The plugin does not send it, because it
+  does not need to.
+
+Full evidence, including one false-negative probe worth not repeating:
+[`docs/verification/2026-07-27-live-checks.md`](docs/verification/2026-07-27-live-checks.md)
 
 ## Design notes
 

@@ -118,10 +118,28 @@ Slot 2 of the resolution order — the per-invocation `model` parameter — is t
 only programmable lever, and writing it beats frontmatter. A `PreToolUse` hook
 can write it through `updatedInput`.
 
-But `PreToolUse` **cannot see the session model**. There is no `model` field in
-its input and no `$CLAUDE_MODEL` environment variable; only `SessionStart`
-receives one. `SubagentStart` is context-only and cannot alter a model. So the
-mechanism splits across two hooks joined by a state file:
+> **Corrected 2026-07-27, after the final review.** An earlier version of this
+> section claimed `PreToolUse` "cannot see the session model." That is true only
+> of a `model` *field* — there is none, and there is no `$CLAUDE_MODEL` variable.
+> But `PreToolUse` **does** receive `transcript_path`, which is rung 2's actual
+> source, and by dispatch time the transcript contains assistant turns. The
+> original claim led to a design that resolved the model **once, at
+> `SessionStart`**, which is the one moment rungs 1 and 2 structurally cannot
+> answer — leaving `settings.json` to decide every time. That is the rung this
+> spec itself describes as "absent if the session model came from `--model`".
+>
+> The consequence was reproduced: with `settings.json` saying `sonnet` and a real
+> session on `--model opus`, an agent deliberately declaring `model: opus` was
+> **downgraded to `claude-sonnet-5`** and labelled `(inherit)`. The plugin caused
+> the precise harm §1 exists to prevent, and was worse than not installing it.
+> It also silently broke §2's promise that subagents follow a mid-session
+> `/model` switch, since `/model` fires no `SessionStart`.
+>
+> **The fix:** resolve at *dispatch* time, in `PreToolUse`, preferring the
+> transcript; the cached value is now a fallback rather than the authority.
+
+`SubagentStart` is context-only and cannot alter a model. So the mechanism spans
+two hooks, with the state file as a fallback channel rather than the primary one:
 
 ```
 SessionStart
@@ -171,15 +189,112 @@ that is working correctly.
 
 ## 6. Resolving the session model
 
-**The ladder stops at the first source that yields a usable value.** Sources are
-tried in order; the first success wins and the rest are not consulted.
+**The ladder runs at two different moments, and the moment matters more than the
+order.** This was the defect the final review caught: a ladder consulted only at
+`SessionStart` can only ever reach rung 3.
+
+| Moment | Rungs that can answer | Authority |
+| --- | --- | --- |
+| `SessionStart` (capture) | 3 only — rung 1 is absent on this build, rung 2's transcript is empty | fallback |
+| `PreToolUse` (dispatch) | 2, from `transcript_path`, which by now has assistant turns | **primary** |
+
+So `enforce-subagent-model.mjs` resolves the session model as:
+
+```
+modelFromTranscript(input.transcript_path)   // ground truth at dispatch time
+  ?? readSessionModel(input.session_id)      // the SessionStart cache
+  // still nothing? -> fail open, emit nothing
+```
+
+Preferring the transcript fixes three cases the cache cannot: mid-session `/model`
+switches (which fire no `SessionStart`), forked sessions, and any session where
+`settings.json` disagrees with reality — **from the second assistant turn onward.**
+
+### Source strength, and why the transcript is not enough
+
+Measured at hook fire time on the **first** tool call of a session:
+
+```json
+{"tool":"Agent","tp_present":true,"exists":true,"bytes":49038,"assistantModels":[]}
+```
+
+The transcript file exists and has content, but carries **no assistant turn yet** —
+those are flushed after the turn completes. So on the first dispatch of a session,
+rung 2 cannot answer either, and resolution falls to `settings.json` exactly as
+before. Most subagents are dispatched on turn one. The transcript fix alone does
+not close the hole.
+
+Since the session model cannot always be known when the decision must be made,
+each source carries a **strength**, and the strength governs what the hook is
+allowed to do:
+
+| Source | Strength | Why |
+| --- | --- | --- |
+| `transcript` | **strong** | The model the session demonstrably just used |
+| `session-start` | **strong** | Claude Code's own report of the session's model |
+| `settings` | **weak** | Configuration, not observation. Stale under `--model` and `/model` |
+
+**The rule: a weak source may never downgrade.**
+
+The harm this plugin exists to prevent is a subagent silently running on a
+*cheaper* model than intended. Every failure mode found in review was a
+downgrade. So when the session model is known only from a weak source, the hook
+rewrites only if doing so does not move the subagent to a cheaper model:
+
+```
+rank: opus (3) > sonnet (2) > haiku (1)
+
+strong source -> rewrite whenever effective !== session model
+weak source   -> rewrite only if rank(session) >= rank(effective)
+```
+
+A `sonnet` agent in a session `settings.json` calls `opus` is still upgraded —
+that is the actual use case, and it remains covered. An agent deliberately
+declaring `opus` when `settings.json` says `sonnet` is now **left alone**, because
+the plugin cannot prove the session is really on sonnet and being wrong there
+causes the exact harm it was built to prevent.
+
+`fable` is deliberately **unranked**: it is a different kind of model, not a
+cheaper or dearer one. If either side of a weak-source comparison is `fable`, the
+hook does nothing. Guessing an ordering there would be inventing a claim.
+
+This makes the plugin incapable of causing a downgrade it cannot justify, at the
+cost of declining some legitimate rewrites on turn one. That trade is deliberate:
+a policy that occasionally does nothing is strictly better than one that
+occasionally does harm, because the harm is invisible to the person it happens to.
+
+**Within either moment, the ladder stops at the first source that yields a usable
+value.** Sources are tried in order; the first success wins and the rest are not
+consulted.
 
 | # | Source | Why it can miss |
 | --- | --- | --- |
 | 1 | `SessionStart` hook input `model` field | Documented as "not guaranteed to be present" |
-| 2 | `transcript_path` JSONL — last assistant message's `model` | Ground truth, but written asynchronously and may lag |
+| 2 | `transcript_path` JSONL — the **main session's** last assistant message | Ground truth, but written asynchronously and may lag |
 | 3 | `settings.json` `"model"` — project, then user | Absent if the session model came from `--model` |
 | 4 | *(none)* | → **fail open**, emit nothing |
+
+### Reading rung 2 correctly
+
+Two constraints on the transcript scan, both load-bearing:
+
+**Only the main session's assistant turns count.** A transcript can carry
+sidechain entries — subagent turns. Reading one would cache a *subagent's*
+model as the session model and then pin later subagents to it: a
+self-reinforcing loop in the exact plugin built to prevent it. The scan
+therefore skips any entry marked as a sidechain and any entry that is not an
+assistant message, and **stops at the first such entry it finds**. If that
+entry's model does not normalize, rung 2 is a miss and the ladder falls to
+rung 3 — it does not keep walking backwards into older turns, because an older
+turn's model is not "the session's model".
+
+**The read window must contain a complete record.** The scan reads the tail of
+the file rather than all of it, so a single record larger than the window would
+be truncated past its `model` key and silently missed. The window therefore
+grows — 256 KiB, then 2 MiB, then the whole file — until it yields a usable
+result or the file is exhausted. A window that starts mid-line is safe on its
+own: a truncated JSON fragment always carries unbalanced brackets and fails
+`JSON.parse`, so it is skipped rather than misread.
 
 ### Normalization
 
