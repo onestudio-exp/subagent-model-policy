@@ -1,0 +1,15 @@
+{
+  "name": "subagent-model-policy",
+  "version": "0.1.0",
+  "description": "Keeps Claude Code subagents on the same model as your session.",
+  "owner": {
+    "name": "OneStudio"
+  },
+  "plugins": [
+    {
+      "name": "subagent-model-policy",
+      "source": "./",
+      "description": "SessionStart captures the session model; PreToolUse rewrites subagent model calls so subagents inherit unless explicitly pinned."
+    }
+  ]
+}

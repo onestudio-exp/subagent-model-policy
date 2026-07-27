@@ -1,0 +1,10 @@
+{
+  "name": "subagent-model-policy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Keeps Claude Code subagents on the same model as your session.",
+  "scripts": {
+    "test": "node --test tests/*.mjs"
+  }
+}
