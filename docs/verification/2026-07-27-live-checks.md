@@ -140,3 +140,60 @@ the way it is today.
 The `.meta.json` file is also the ground-truth method for verifying which model
 a subagent ran on. It records the resolved `model` directly. Use it rather than
 asking a subagent to report its own identity.
+
+---
+
+## 4. End-to-end: both directions of the policy
+
+Run with the **real shipped hook scripts** wired into a disposable sandbox
+project's `.claude/settings.json`. No global plugin install; the machine's
+`~/.claude/settings.json` and plugin config were not modified.
+
+Two agents, both declaring `model: sonnet`, differing only in the pin:
+
+| Agent | Frontmatter | `.meta.json` `model` | Transcript model |
+| --- | --- | --- | --- |
+| `drifter` | `model: sonnet` | `"opus"` | `claude-opus-5` |
+| `pinned-agent` | `model: sonnet` + `model-policy: pinned` | *(key absent)* | `claude-sonnet-5` |
+
+**Result:** the unpinned agent was redirected to the session model; the pinned
+agent was left alone.
+
+The pinned case is the stronger evidence of the two. The `model` key is *absent*
+from its `.meta.json`, which means the hook emitted nothing at all and no
+per-invocation model was passed — resolution fell through to the frontmatter on
+its own. Had the hook been overriding indiscriminately and merely happening to
+land on `sonnet`, the key would be present. Absence proves silence.
+
+Both actual models were read from the subagents' own transcripts, not inferred
+from the metadata alone.
+
+## 5. Doctor, both directions
+
+Against a real captured session:
+
+```
+  state directory  ok  C:\Users\Pc\.claude\subagent-model-policy\sessions
+  session model    ok  opus (via settings)
+  cached sessions  ok  3
+
+Policy is live. Subagents inherit the session model unless pinned.
+EXIT=0
+```
+
+Against an unknown session id:
+
+```
+  session model    FAIL  no state captured for no-such-session-xyz
+
+Policy is NOT live. Start a fresh session so SessionStart can run.
+EXIT=1
+```
+
+**Incidental, and it validates the design:** the healthy run reports
+`opus (via settings)` — **not** `via session-start`. `SessionStart` did not
+supply a `model` field, so the ladder fell through rung 1, then rung 2, and
+resolved at rung 3. The spec called the `SessionStart` `model` field "not
+guaranteed to be present"; in practice, on this build, it was absent. The
+fallback ladder is not defensive padding — it is the thing actually doing the
+work.

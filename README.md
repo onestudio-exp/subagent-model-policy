@@ -63,7 +63,35 @@ A pin is final. Everything else follows the session.
 ```
 
 Verifies the hooks are registered, the session model was detected, and the state
-file is being written.
+file is being written. Exits `0` when the policy is live, `1` when it is not.
+
+If it reports `session model FAIL`, the plugin was almost certainly installed
+mid-session — `SessionStart` had already run, so nothing was captured. Start a
+fresh session.
+
+## Verified behaviour
+
+Both directions were confirmed end to end against Claude Code 2.1.220, reading
+the model each subagent actually ran on from its own transcript — not by asking
+the subagent, which cannot reliably report its own identity:
+
+| Agent frontmatter | Pinned? | Actually ran on |
+| --- | --- | --- |
+| `model: sonnet` | no | **opus** — redirected to the session model |
+| `model: sonnet` | **yes** | **sonnet** — pin honoured |
+
+Two facts about the mechanism were also settled by live check rather than
+assumption, and they are why the plugin is shaped the way it is:
+
+- The subagent tool reports its name as **`Agent`**, not `Task`. The shipped
+  matcher covers both.
+- `updatedInput` applies **without** `permissionDecision`. That matters for
+  safety: sending `permissionDecision: "allow"` would auto-approve every Agent
+  call and silently widen permissions. The plugin does not send it, because it
+  does not need to.
+
+Full evidence, including one false-negative probe worth not repeating:
+[`docs/verification/2026-07-27-live-checks.md`](docs/verification/2026-07-27-live-checks.md)
 
 ## Design notes
 
