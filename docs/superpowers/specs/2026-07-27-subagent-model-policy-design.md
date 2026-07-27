@@ -177,9 +177,31 @@ tried in order; the first success wins and the rest are not consulted.
 | # | Source | Why it can miss |
 | --- | --- | --- |
 | 1 | `SessionStart` hook input `model` field | Documented as "not guaranteed to be present" |
-| 2 | `transcript_path` JSONL — last assistant message's `model` | Ground truth, but written asynchronously and may lag |
+| 2 | `transcript_path` JSONL — the **main session's** last assistant message | Ground truth, but written asynchronously and may lag |
 | 3 | `settings.json` `"model"` — project, then user | Absent if the session model came from `--model` |
 | 4 | *(none)* | → **fail open**, emit nothing |
+
+### Reading rung 2 correctly
+
+Two constraints on the transcript scan, both load-bearing:
+
+**Only the main session's assistant turns count.** A transcript can carry
+sidechain entries — subagent turns. Reading one would cache a *subagent's*
+model as the session model and then pin later subagents to it: a
+self-reinforcing loop in the exact plugin built to prevent it. The scan
+therefore skips any entry marked as a sidechain and any entry that is not an
+assistant message, and **stops at the first such entry it finds**. If that
+entry's model does not normalize, rung 2 is a miss and the ladder falls to
+rung 3 — it does not keep walking backwards into older turns, because an older
+turn's model is not "the session's model".
+
+**The read window must contain a complete record.** The scan reads the tail of
+the file rather than all of it, so a single record larger than the window would
+be truncated past its `model` key and silently missed. The window therefore
+grows — 256 KiB, then 2 MiB, then the whole file — until it yields a usable
+result or the file is exhausted. A window that starts mid-line is safe on its
+own: a truncated JSON fragment always carries unbalanced brackets and fails
+`JSON.parse`, so it is skipped rather than misread.
 
 ### Normalization
 
