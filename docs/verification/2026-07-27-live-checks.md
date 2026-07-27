@@ -236,3 +236,52 @@ and may therefore downgrade a deliberate `model: opus`.
 The window is a single dispatch and it is spec-sanctioned, but it is the one
 remaining path to the original harm shape and is recorded here rather than left
 implicit.
+
+## 7. The marketplace install path
+
+The last thing verified, and it found two things reasoning had not.
+
+**`main` cannot be installed.** `claude plugin marketplace add onestudio-exp/subagent-model-policy`
+fails with *"Marketplace file not found"* — `main` holds only the spec, plan,
+README and `.gitignore`; every plugin file is on the feature branch. Expected
+pre-merge, and worth knowing: the GitHub install path only works once this
+merges.
+
+Installed instead from the local working tree, which is the same machinery:
+
+```
+√ Successfully added marketplace: subagent-model-policy
+√ Successfully installed plugin: subagent-model-policy@subagent-model-policy (scope: user)
+```
+
+**The plugin works when installed.** A sandbox project with **no**
+`.claude/settings.json` — so any hook that fires comes from the install, not
+from hand-wiring — dispatching an agent declaring `model: sonnet`:
+
+```json
+{"agentType":"drifter2","spawnDepth":1,"model":"opus"}
+ACTUAL MODEL: claude-opus-5
+```
+
+`${CLAUDE_PLUGIN_ROOT}` resolves correctly in `hooks.json`. That had been
+verified by reasoning alone until now.
+
+### The command name in the docs was wrong
+
+`/subagent-model` returns **`Unknown command`**. Plugin commands are namespaced
+`plugin:command`, so the real name is:
+
+```
+/subagent-model-policy:subagent-model
+```
+
+Which works, and confirms the other half: `${CLAUDE_SESSION_ID}` substitutes
+correctly through the real plugin path — the doctor found the session state and
+reported `All checks are ok`. A final-review finding had claimed that token was
+broken, based on measuring an *environment variable* in a Bash context; the
+markdown substitution is a different mechanism and it works. The finding was
+wrong; the docs' command name was wrong. Only installing revealed either.
+
+Both `README.md` and `SKILL.md` had documented `/subagent-model doctor`. Neither
+name nor `doctor` subcommand existed — the command file ignores `$ARGUMENTS`, so
+the bare namespaced form is the whole invocation.

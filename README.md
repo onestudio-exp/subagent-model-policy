@@ -74,8 +74,11 @@ definition is.
 ## Checking it works
 
 ```
-/subagent-model doctor
+/subagent-model-policy:subagent-model
 ```
+
+Plugin commands are namespaced `plugin:command`, so the bare `/subagent-model`
+will not resolve. The name is verified against an actual install, not inferred.
 
 Verifies the hooks are registered, the session model was detected, and the state
 file is being written. Exits `0` when the policy is live, `1` when it is not.

@@ -67,7 +67,9 @@ the person who spawned the agent will not see it happen.
 
 ## When something looks wrong
 
-Run `/subagent-model doctor`. The usual cause of `session model FAIL` is
+Run `/subagent-model-policy:subagent-model` — plugin commands are namespaced
+`plugin:command`, so the bare `/subagent-model` will not resolve. The usual
+cause of `session model FAIL` is
 installing the plugin mid-session — the `SessionStart` hook has not run yet, so
 start a fresh session.
 
