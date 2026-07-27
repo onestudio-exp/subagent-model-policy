@@ -3,7 +3,19 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { stateDir, readSessionModel } from './lib/state.mjs';
 
-const sessionId = process.argv[2];
+/**
+ * The session id, in order of preference: an explicit CLI argument, then
+ * CLAUDE_CODE_SESSION_ID (the name actually exported to Bash), then the
+ * bare CLAUDE_SESSION_ID (the braced ${CLAUDE_SESSION_ID} substitution used
+ * in commands/subagent-model.md is confirmed to work at the slash-command
+ * layer, but the *environment variable* name it lands under was found to
+ * differ) — never bet on a single name when the fallback is this cheap.
+ */
+function resolveSessionId() {
+  return process.argv[2] || process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || null;
+}
+
+const sessionId = resolveSessionId();
 
 // stateDir() is built not to throw (see lib/state.mjs), but this call sits
 // at module scope, outside any other try/catch — a diagnostic tool must
@@ -56,8 +68,24 @@ console.log('subagent-model-policy\n');
 for (const r of rows) {
   console.log(`  ${r.label.padEnd(width)}  ${r.status.padEnd(statusWidth)}  ${r.detail}`);
 }
-console.log(healthy
-  ? '\nPolicy is live. Subagents inherit the session model unless pinned.'
-  : '\nPolicy is NOT live. Start a fresh session so SessionStart can run.');
+/**
+ * The closing line must depend on which row actually failed. "Start a fresh
+ * session" is real advice when state/session-model is missing — but when
+ * the failure is that no session id was ever supplied, a fresh session
+ * cannot help: the problem is the invocation, not anything SessionStart
+ * would capture.
+ */
+function closingMessage() {
+  if (healthy) return 'Policy is live. Subagents inherit the session model unless pinned.';
+  const sessionIdRow = rows.find((r) => r.label === 'session id');
+  if (sessionIdRow?.status === 'FAIL') {
+    return 'Policy is NOT live: no session id was available to check. This is an invocation ' +
+      'problem, not a policy one — re-run via the /subagent-model command (which supplies ' +
+      'one automatically), or pass one explicitly: node hooks/doctor.mjs <session_id>.';
+  }
+  return 'Policy is NOT live. Start a fresh session so SessionStart can run.';
+}
+
+console.log(`\n${closingMessage()}`);
 
 process.exit(healthy ? 0 : 1);
