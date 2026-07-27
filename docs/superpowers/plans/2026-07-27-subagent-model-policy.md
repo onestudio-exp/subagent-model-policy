@@ -19,6 +19,10 @@
 - **Model aliases emitted to the Agent tool must be one of** `opus`, `sonnet`, `haiku`, `fable`. Never emit a full model ID. (Spec §6)
 - **All model identifiers are normalized before any comparison or emission**, on both sides. (Spec §6)
 - **ESM only.** `"type": "module"` in `package.json`; all files `.mjs`.
+- **Full suite runs as `npm test`**, which is `node --test tests/*.mjs`. A bare
+  `node --test tests/` fails on Node 25 + Windows — the runner treats the
+  directory as a test file and reports a synthetic failure. Node expands the
+  glob itself, so this works under `cmd`, PowerShell, and POSIX shells alike.
 - **State directory is overridable** via `SUBAGENT_MODEL_POLICY_STATE_DIR` so tests never touch the real `~/.claude`.
 
 ---
