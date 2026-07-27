@@ -118,10 +118,28 @@ Slot 2 of the resolution order — the per-invocation `model` parameter — is t
 only programmable lever, and writing it beats frontmatter. A `PreToolUse` hook
 can write it through `updatedInput`.
 
-But `PreToolUse` **cannot see the session model**. There is no `model` field in
-its input and no `$CLAUDE_MODEL` environment variable; only `SessionStart`
-receives one. `SubagentStart` is context-only and cannot alter a model. So the
-mechanism splits across two hooks joined by a state file:
+> **Corrected 2026-07-27, after the final review.** An earlier version of this
+> section claimed `PreToolUse` "cannot see the session model." That is true only
+> of a `model` *field* — there is none, and there is no `$CLAUDE_MODEL` variable.
+> But `PreToolUse` **does** receive `transcript_path`, which is rung 2's actual
+> source, and by dispatch time the transcript contains assistant turns. The
+> original claim led to a design that resolved the model **once, at
+> `SessionStart`**, which is the one moment rungs 1 and 2 structurally cannot
+> answer — leaving `settings.json` to decide every time. That is the rung this
+> spec itself describes as "absent if the session model came from `--model`".
+>
+> The consequence was reproduced: with `settings.json` saying `sonnet` and a real
+> session on `--model opus`, an agent deliberately declaring `model: opus` was
+> **downgraded to `claude-sonnet-5`** and labelled `(inherit)`. The plugin caused
+> the precise harm §1 exists to prevent, and was worse than not installing it.
+> It also silently broke §2's promise that subagents follow a mid-session
+> `/model` switch, since `/model` fires no `SessionStart`.
+>
+> **The fix:** resolve at *dispatch* time, in `PreToolUse`, preferring the
+> transcript; the cached value is now a fallback rather than the authority.
+
+`SubagentStart` is context-only and cannot alter a model. So the mechanism spans
+two hooks, with the state file as a fallback channel rather than the primary one:
 
 ```
 SessionStart
@@ -171,8 +189,30 @@ that is working correctly.
 
 ## 6. Resolving the session model
 
-**The ladder stops at the first source that yields a usable value.** Sources are
-tried in order; the first success wins and the rest are not consulted.
+**The ladder runs at two different moments, and the moment matters more than the
+order.** This was the defect the final review caught: a ladder consulted only at
+`SessionStart` can only ever reach rung 3.
+
+| Moment | Rungs that can answer | Authority |
+| --- | --- | --- |
+| `SessionStart` (capture) | 3 only — rung 1 is absent on this build, rung 2's transcript is empty | fallback |
+| `PreToolUse` (dispatch) | 2, from `transcript_path`, which by now has assistant turns | **primary** |
+
+So `enforce-subagent-model.mjs` resolves the session model as:
+
+```
+modelFromTranscript(input.transcript_path)   // ground truth at dispatch time
+  ?? readSessionModel(input.session_id)      // the SessionStart cache
+  // still nothing? -> fail open, emit nothing
+```
+
+Preferring the transcript fixes four cases the cache cannot: sessions started with
+`--model`, mid-session `/model` switches (which fire no `SessionStart`), forked
+sessions, and model values like `opusplan` that no single alias can represent.
+
+**Within either moment, the ladder stops at the first source that yields a usable
+value.** Sources are tried in order; the first success wins and the rest are not
+consulted.
 
 | # | Source | Why it can miss |
 | --- | --- | --- |
