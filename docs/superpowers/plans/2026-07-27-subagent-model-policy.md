@@ -1267,7 +1267,7 @@ main().catch(() => {}).finally(() => process.exit(0));
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `npm test`
-Expected: PASS — all suites green, 14 tests in this file
+Expected: PASS — all suites green, 13 tests in this file
 
 - [ ] **Step 5: Commit**
 
