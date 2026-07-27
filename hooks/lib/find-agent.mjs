@@ -102,19 +102,22 @@ function isUnderPlugin(root, filePath, pluginName) {
 
 /**
  * Search the plugin cache for `<name>.md` under an `agents/` directory.
- * When `pluginQualifier` is given (a `plugin:agent`-style lookup), a match
- * inside that plugin's own directory (relative index 1 under `root`) wins;
- * only when no such match exists does the search fall back to any
- * `agents/` match at all — so an explicitly-qualified lookup never resolves
- * to a different plugin's same-named agent.
+ * When `pluginQualifier` is given (a `plugin:agent`-style lookup), only a
+ * match inside that plugin's own directory (relative index 1 under `root`)
+ * counts — an unresolved qualifier returns null rather than falling back to
+ * an arbitrary same-named match elsewhere in the cache. Falling back would
+ * mean a qualified lookup for a pinned agent could resolve to a different,
+ * unpinned plugin's same-named agent and have the hook override what looks
+ * like a pin — a spec §3 non-goal violation ("does not override explicitly
+ * pinned agents"). Failing open (null) is cheaper than guessing.
+ * Unqualified (bare-name) lookups are unaffected and keep the broad search.
  */
 function findInPluginCache(root, name, pluginQualifier) {
   const matches = [];
   collectPluginAgentMatches(root, name, 0, false, matches);
   if (matches.length === 0) return null;
   if (pluginQualifier) {
-    const qualified = matches.find((path) => isUnderPlugin(root, path, pluginQualifier));
-    if (qualified) return qualified;
+    return matches.find((path) => isUnderPlugin(root, path, pluginQualifier)) ?? null;
   }
   return matches[0];
 }

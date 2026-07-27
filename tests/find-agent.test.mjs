@@ -146,6 +146,19 @@ test('plugin scope: a bare, unqualified name resolves when it exists only in the
   assert.equal(readAgentPolicy('lonely', root, home).model, 'sonnet');
 });
 
+test('plugin scope: a qualifier naming a plugin absent from the cache returns null, even when a same-named agent exists under a different plugin', () => {
+  const root = tmp();
+  const home = tmp();
+  // No "ghost" plugin exists anywhere in the cache, but "reviewer" exists
+  // under an unrelated plugin. A qualified lookup for ghost:reviewer must
+  // never fall back to that arbitrary match — if the real agent is pinned
+  // and this unrelated one is not, that fallback would silently override
+  // the pin (spec §3 non-goal: "does not override explicitly pinned agents").
+  writePluginFile(home, 'mkt', 'other-plugin', '1.0.0', 'agents', 'reviewer', 'name: reviewer\nmodel: opus');
+  assert.equal(readAgentPolicy('ghost:reviewer', root, home), null,
+    'an unresolved qualifier must fail open (null), never resolve to an arbitrary same-named agent');
+});
+
 test('plugin scope: qualifier matches the plugin segment specifically, not a marketplace merely named after another plugin', () => {
   const root = tmp();
   const home = tmp();
