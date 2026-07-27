@@ -23,11 +23,20 @@ function seedAgent(name, frontmatter) {
   return root;
 }
 
-const call = (sessionId, toolInput, cwd) => ({
+/** A transcript JSONL whose last main-session assistant turn names `model`. */
+function seedTranscript(model) {
+  const dir = tmp('smp-transcript-');
+  const path = join(dir, 'transcript.jsonl');
+  writeFileSync(path, JSON.stringify({ type: 'assistant', message: { model } }));
+  return path;
+}
+
+const call = (sessionId, toolInput, cwd, transcriptPath) => ({
   session_id: sessionId,
   hook_event_name: 'PreToolUse',
   tool_name: 'Task',
   cwd,
+  transcript_path: transcriptPath,
   tool_input: { prompt: 'do a thing', ...toolInput },
 });
 
@@ -141,6 +150,57 @@ test('case 12: a pin is honoured when the model is a full ID', async () => {
   const r = await runHook(SCRIPT, call('s12', { subagent_type: 'full' }, cwd),
     { SUBAGENT_MODEL_POLICY_STATE_DIR: state });
   assert.equal(r.stdout.trim(), '');
+});
+
+// --- Fix 1: resolve at dispatch time, preferring the transcript ------------
+// The session model must be resolved fresh at PreToolUse time, not merely
+// read from the SessionStart cache — see spec §5/§6 (corrected 2026-07-27).
+
+test('dispatch-time fix 1a: the transcript wins over a stale cache', async () => {
+  const state = seedState('s15', 'sonnet'); // stale: session-start cache says sonnet
+  const cwd = seedAgent('copied', 'name: copied\nmodel: sonnet');
+  const transcript = seedTranscript('claude-opus-5'); // ground truth at dispatch time: opus
+  const r = await runHook(SCRIPT, call('s15', { subagent_type: 'copied' }, cwd, transcript),
+    { SUBAGENT_MODEL_POLICY_STATE_DIR: state });
+  assert.equal(parse(r.stdout).updatedInput.model, 'opus', 'transcript must win over the cache');
+});
+
+test('dispatch-time fix 1b: with no transcript_path at all, the cache fallback still works', async () => {
+  const state = seedState('s16', 'opus');
+  const cwd = seedAgent('copied', 'name: copied\nmodel: sonnet');
+  const r = await runHook(SCRIPT, call('s16', { subagent_type: 'copied' }, cwd /* no transcript */),
+    { SUBAGENT_MODEL_POLICY_STATE_DIR: state });
+  assert.equal(parse(r.stdout).updatedInput.model, 'opus', 'cache fallback must still work');
+});
+
+test('dispatch-time fix 1c: an unreadable/missing transcript falls back to the cache without throwing', async () => {
+  const state = seedState('s17', 'opus');
+  const cwd = seedAgent('copied', 'name: copied\nmodel: sonnet');
+  const missingTranscript = join(tmp('smp-missing-'), 'does-not-exist.jsonl');
+  const r = await runHook(SCRIPT, call('s17', { subagent_type: 'copied' }, cwd, missingTranscript),
+    { SUBAGENT_MODEL_POLICY_STATE_DIR: state });
+  assert.equal(r.code, 0);
+  assert.equal(parse(r.stdout).updatedInput.model, 'opus', 'must fall back to the cache, not throw');
+});
+
+test('dispatch-time fix 1d: neither transcript nor cache yields a model — emits nothing, exit 0', async () => {
+  const cwd = seedAgent('copied', 'name: copied\nmodel: sonnet');
+  const missingTranscript = join(tmp('smp-missing-'), 'nope.jsonl');
+  const r = await runHook(SCRIPT, call('never-seeded', { subagent_type: 'copied' }, cwd, missingTranscript),
+    { SUBAGENT_MODEL_POLICY_STATE_DIR: tmp('smp-empty-') });
+  assert.equal(r.code, 0);
+  assert.equal(r.stdout.trim(), '');
+});
+
+test('dispatch-time fix 1e (regression for the Critical): a deliberate `model: opus` matching the true session model is left alone, even with a stale sonnet cache', async () => {
+  const state = seedState('s18', 'sonnet'); // the stale cache that produced the original defect
+  const cwd = seedAgent('deliberate', 'name: deliberate\nmodel: opus'); // deliberately declared, unpinned
+  const transcript = seedTranscript('claude-opus-5'); // the real session is on opus
+  const r = await runHook(SCRIPT, call('s18', { subagent_type: 'deliberate' }, cwd, transcript),
+    { SUBAGENT_MODEL_POLICY_STATE_DIR: state });
+  assert.equal(r.code, 0);
+  assert.equal(r.stdout.trim(), '',
+    'must not downgrade opus->sonnet: under the old cache-only resolution this was the exact harm the plugin exists to prevent');
 });
 
 // --- Effective-model precedence (spec section 5) ---------------------------

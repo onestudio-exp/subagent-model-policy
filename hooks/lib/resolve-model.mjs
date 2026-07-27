@@ -82,8 +82,15 @@ function lastAssistantModel(text) {
  * huge final line isn't cut off before its `model` key — stopping as soon
  * as a window yields a qualifying entry, or once a window already covers
  * the whole file.
+ *
+ * This is rung 2 of the ladder, and — since the corrected 2026-07-27
+ * design (spec §5/§6) — the *primary* source at `PreToolUse` dispatch time,
+ * not merely a fallback consulted at `SessionStart`. Exported so
+ * `enforce-subagent-model.mjs` can resolve the session model fresh at
+ * dispatch time instead of trusting only the `SessionStart` cache, which
+ * structurally cannot see rung 1 or rung 2 at the moment it runs.
  */
-function modelFromTranscript(transcriptPath) {
+export function modelFromTranscript(transcriptPath) {
   if (!transcriptPath) return null;
   let size;
   try {
