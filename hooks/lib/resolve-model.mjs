@@ -32,6 +32,62 @@ export function normalizeModel(value) {
   return null;
 }
 
+/**
+ * Relative cost rank of a ranked alias — higher is more capable/expensive.
+ * `fable` is deliberately absent: it is a different *kind* of model, not a
+ * cheaper or dearer point on this scale (spec §6, "Source strength, and why
+ * the transcript is not enough").
+ */
+const RANK = { haiku: 1, sonnet: 2, opus: 3 };
+
+/** Rank of a normalized alias, or null when unranked (`fable`) or unrecognised. */
+export function rankOf(alias) {
+  return Object.prototype.hasOwnProperty.call(RANK, alias) ? RANK[alias] : null;
+}
+
+/**
+ * Session-model sources carry a strength (spec §6): `transcript` and
+ * `session-start` are **strong** — an observation of the session's real
+ * model. `settings` is **weak** — configuration, not observation, and stale
+ * under `--model` or `/model`.
+ */
+const STRONG_SOURCES = new Set(['transcript', 'session-start']);
+
+/**
+ * Strength of a session-model source. An unrecognised source (e.g. a state
+ * file written by some other version of this plugin) is treated as weak —
+ * the conservative default, since the harm this policy exists to prevent is
+ * a downgrade, and an unrecognised source carries no proof against one.
+ */
+export function sourceStrength(source) {
+  return STRONG_SOURCES.has(source) ? 'strong' : 'weak';
+}
+
+/**
+ * Decide whether the hook may rewrite a subagent's effective model to the
+ * session model, given the strength of the source that produced the session
+ * model (spec §6, "Source strength"):
+ *
+ *   strong source -> may always rewrite (equality is the caller's concern)
+ *   weak source   -> may rewrite only if doing so does not move to a
+ *                     cheaper model: rank(sessionModel) >= rank(effective)
+ *
+ * `fable` is unranked. If either side of a *weak*-source comparison is
+ * `fable`, this returns false — inventing an ordering against an unranked
+ * model would be a claim this plugin cannot make. A strong source carries no
+ * such exemption: it needs no rank to justify a rewrite, so it may rewrite to
+ * or from `fable` exactly as it may rewrite to or from any other model.
+ *
+ * `sessionModel` and `effective` must already be normalized aliases.
+ */
+export function mayRewrite(source, sessionModel, effective) {
+  if (sourceStrength(source) === 'strong') return true;
+  const sessionRank = rankOf(sessionModel);
+  const effectiveRank = rankOf(effective);
+  if (sessionRank === null || effectiveRank === null) return false;
+  return sessionRank >= effectiveRank;
+}
+
 /** Read at most the final `maxBytes` of a file, as UTF-8. */
 function tailFile(path, maxBytes = 262144) {
   const size = statSync(path).size;
