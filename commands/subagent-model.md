@@ -7,7 +7,7 @@ Run the policy self-test and report the result to the user.
 Run this exactly, substituting the current session id:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.mjs" "$CLAUDE_SESSION_ID"
+node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.mjs" "${CLAUDE_SESSION_ID}"
 ```
 
 Then explain the output in one or two sentences:

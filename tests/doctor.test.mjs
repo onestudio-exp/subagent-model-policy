@@ -48,3 +48,9 @@ test('a missing session id argument does not throw', async () => {
   assert.ok(r.code === 0 || r.code === 1);
   assert.match(r.stdout, /session id/i);
 });
+
+test('the no-session-id hint uses the braced substitution token, not the bare form', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'smp-doc-'));
+  const r = await runDoctor([], { SUBAGENT_MODEL_POLICY_STATE_DIR: dir });
+  assert.ok(r.stdout.includes('${CLAUDE_SESSION_ID}'));
+});
