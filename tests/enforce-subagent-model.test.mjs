@@ -8,10 +8,10 @@ import { runHook } from './helpers/run-hook.mjs';
 const SCRIPT = 'hooks/enforce-subagent-model.mjs';
 const tmp = (p = 'smp-enforce-') => mkdtempSync(join(tmpdir(), p));
 
-function seedState(sessionId, model) {
+function seedState(sessionId, model, source = 'session-start') {
   const dir = tmp('smp-state-');
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `${sessionId}.json`), JSON.stringify({ model, source: 'session-start' }));
+  writeFileSync(join(dir, `${sessionId}.json`), JSON.stringify({ model, source }));
   return dir;
 }
 
@@ -28,6 +28,28 @@ function seedTranscript(model) {
   const dir = tmp('smp-transcript-');
   const path = join(dir, 'transcript.jsonl');
   writeFileSync(path, JSON.stringify({ type: 'assistant', message: { model } }));
+  return path;
+}
+
+/**
+ * A "turn one" transcript: it exists and has real content, but carries no
+ * assistant entry at all — assistant turns are flushed only after the turn
+ * completes, so this is what the file looks like on the very first tool call
+ * of a session (spec §6, "Source strength, and why the transcript is not
+ * enough"), mirroring the measured
+ * `{"tp_present":true,"exists":true,"bytes":49038,"assistantModels":[]}`.
+ * `modelFromTranscript` must miss on this and let the hook fall back to the
+ * cache — this is the fixture the last fix attempt did not have.
+ */
+function seedTurnOneTranscript() {
+  const dir = tmp('smp-transcript-turn1-');
+  const path = join(dir, 'transcript.jsonl');
+  const lines = [
+    { type: 'queue-operation', op: 'enqueue' },
+    { type: 'attachment', name: 'notes.txt' },
+    { type: 'user', message: { role: 'user', content: 'do a thing' } },
+  ];
+  writeFileSync(path, lines.map((l) => JSON.stringify(l)).join('\n'));
   return path;
 }
 
@@ -218,4 +240,88 @@ test('no rewrite when the caller already asked for the session model', async () 
   const r = await runHook(SCRIPT, call('s14', { subagent_type: 'copied', model: 'opus' }, cwd),
     { SUBAGENT_MODEL_POLICY_STATE_DIR: state });
   assert.equal(r.stdout.trim(), '');
+});
+
+// --- Weak-source no-downgrade rule (spec §6, "Source strength, and why the
+// transcript is not enough") -------------------------------------------------
+// `settings` is a weak source: configuration, not observation. A weak source
+// may upgrade a subagent but must never downgrade one — the previous fix
+// (preferring the transcript) still left this hole open on turn one, when
+// the transcript exists but carries no assistant entry yet.
+
+test('THE CRITICAL REGRESSION: a weak (settings) session model must not downgrade a deliberate declaration, even on a real turn-one transcript', async () => {
+  const state = seedState('w1', 'sonnet', 'settings'); // weak: settings.json says sonnet
+  const cwd = seedAgent('deliberate', 'name: deliberate\nmodel: opus'); // deliberately declared, unpinned
+  const transcript = seedTurnOneTranscript(); // exists, has content, no assistant turn yet
+  const r = await runHook(SCRIPT, call('w1', { subagent_type: 'deliberate' }, cwd, transcript),
+    { SUBAGENT_MODEL_POLICY_STATE_DIR: state });
+  assert.equal(r.code, 0);
+  assert.equal(r.stdout.trim(), '',
+    'a weak (settings) source must never downgrade opus->sonnet — this is the Critical this fix exists for');
+});
+
+test('THE CRITICAL REGRESSION, without any transcript_path at all: same weak-source downgrade must still not happen', async () => {
+  const state = seedState('w1b', 'sonnet', 'settings');
+  const cwd = seedAgent('deliberate', 'name: deliberate\nmodel: opus');
+  const r = await runHook(SCRIPT, call('w1b', { subagent_type: 'deliberate' }, cwd /* no transcript_path */),
+    { SUBAGENT_MODEL_POLICY_STATE_DIR: state });
+  assert.equal(r.code, 0);
+  assert.equal(r.stdout.trim(), '', 'no transcript at all must fall to the cache and still honour the no-downgrade rule');
+});
+
+test('weak-source upgrade still works: settings says opus, agent declares sonnet -> rewritten to opus', async () => {
+  const state = seedState('w2', 'opus', 'settings');
+  const cwd = seedAgent('copied', 'name: copied\nmodel: sonnet');
+  const r = await runHook(SCRIPT, call('w2', { subagent_type: 'copied' }, cwd),
+    { SUBAGENT_MODEL_POLICY_STATE_DIR: state });
+  assert.equal(parse(r.stdout).updatedInput.model, 'opus', 'an upgrade from a weak source must still work — this is the plugin\'s actual use case');
+});
+
+test('weak-source upgrade still works: settings says sonnet, agent declares haiku -> rewritten to sonnet', async () => {
+  const state = seedState('w3', 'sonnet', 'settings');
+  const cwd = seedAgent('cheap', 'name: cheap\nmodel: haiku');
+  const r = await runHook(SCRIPT, call('w3', { subagent_type: 'cheap' }, cwd),
+    { SUBAGENT_MODEL_POLICY_STATE_DIR: state });
+  assert.equal(parse(r.stdout).updatedInput.model, 'sonnet');
+});
+
+test('strong source (session-start cache) may still downgrade: sonnet session, agent declares opus -> rewritten to sonnet', async () => {
+  const state = seedState('w4', 'sonnet', 'session-start');
+  const cwd = seedAgent('deliberate', 'name: deliberate\nmodel: opus');
+  const r = await runHook(SCRIPT, call('w4', { subagent_type: 'deliberate' }, cwd),
+    { SUBAGENT_MODEL_POLICY_STATE_DIR: state });
+  assert.equal(parse(r.stdout).updatedInput.model, 'sonnet', 'a strong source is a proven session model — that downgrade is legitimate inheritance');
+});
+
+test('strong source (a populated transcript) may still downgrade: sonnet transcript, agent declares opus -> rewritten to sonnet', async () => {
+  const state = seedState('w5', 'opus', 'settings'); // would matter only if the transcript missed
+  const cwd = seedAgent('deliberate', 'name: deliberate\nmodel: opus');
+  const transcript = seedTranscript('claude-sonnet-5'); // populated: this is rung 2, strong
+  const r = await runHook(SCRIPT, call('w5', { subagent_type: 'deliberate' }, cwd, transcript),
+    { SUBAGENT_MODEL_POLICY_STATE_DIR: state });
+  assert.equal(parse(r.stdout).updatedInput.model, 'sonnet', 'a populated transcript is strong evidence and may downgrade');
+});
+
+test('weak source, fable as the session model: emits nothing (unranked)', async () => {
+  const state = seedState('w6', 'fable', 'settings');
+  const cwd = seedAgent('copied', 'name: copied\nmodel: sonnet');
+  const r = await runHook(SCRIPT, call('w6', { subagent_type: 'copied' }, cwd),
+    { SUBAGENT_MODEL_POLICY_STATE_DIR: state });
+  assert.equal(r.stdout.trim(), '', 'fable is unranked; a weak-source comparison against it must invent no ordering');
+});
+
+test('weak source, fable as the agent declaration: emits nothing (unranked)', async () => {
+  const state = seedState('w7', 'sonnet', 'settings');
+  const cwd = seedAgent('storyteller', 'name: storyteller\nmodel: fable');
+  const r = await runHook(SCRIPT, call('w7', { subagent_type: 'storyteller' }, cwd),
+    { SUBAGENT_MODEL_POLICY_STATE_DIR: state });
+  assert.equal(r.stdout.trim(), '', 'fable is unranked; a weak-source comparison against it must invent no ordering');
+});
+
+test('a pinned agent stays pinned even under a weak source that would otherwise upgrade it', async () => {
+  const state = seedState('w8', 'opus', 'settings');
+  const cwd = seedAgent('scanner', 'name: scanner\nmodel: haiku\nmodel-policy: pinned');
+  const r = await runHook(SCRIPT, call('w8', { subagent_type: 'scanner' }, cwd),
+    { SUBAGENT_MODEL_POLICY_STATE_DIR: state });
+  assert.equal(r.stdout.trim(), '', 'a pin is final regardless of source or rank');
 });
