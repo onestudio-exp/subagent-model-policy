@@ -132,15 +132,20 @@ function resolveHomeDir(homeDir) {
 }
 
 /**
- * Built-in subagent types resolve to no definition file on disk (Claude
- * Code implements them internally) and so always fail open regardless of
- * what gets searched. Without this, a lookup for one still paid for a full
- * plugin-cache walk only to land on the same null — measured at ~70-90ms
- * per call against this machine's real `~/.claude/plugins/cache` (~1300
- * agent/command/skill files across several marketplaces; see M5 in the
- * final-fix report). Compared case-insensitively, since Windows and macOS
- * default to case-insensitive filesystems and matching either case is
- * strictly safer than under-matching a reserved name.
+ * Names Claude Code ships as built-in subagent types, which normally have no
+ * definition file on disk (Claude Code implements them internally). This set
+ * is only an optimisation hint, never an authority on what is or isn't a
+ * built-in: `findAgentFile` checks it strictly *after* the project- and
+ * user-scope searches (see below), so a real on-disk file named e.g.
+ * `claude.md` always wins regardless of whether its name appears here. That
+ * ordering is also why the broader membership (beyond the three named in
+ * spec §7 — `Explore`, `Plan`, `general-purpose`) is harmless to keep: adding
+ * `claude` or `statusline-setup` can only skip a redundant plugin-cache walk
+ * that would have returned null anyway, never mask a real file.
+ *
+ * Compared case-insensitively, since Windows and macOS default to
+ * case-insensitive filesystems and matching either case is strictly safer
+ * than under-matching a reserved name.
  *
  * Only applies to a bare (unqualified) lookup: a `plugin:Explore`-style
  * qualified name is a real plugin agent that merely shares the name, not
@@ -163,8 +168,6 @@ export function findAgentFile(subagentType, cwd, homeDir) {
   if (!name) return null;
   const pluginQualifier = parts.length > 1 ? parts[0].trim() || null : null;
 
-  if (!pluginQualifier && BUILTIN_AGENT_TYPES.has(name.toLowerCase())) return null;
-
   const home = resolveHomeDir(homeDir);
 
   const projectAndUserRoots = [
@@ -176,6 +179,12 @@ export function findAgentFile(subagentType, cwd, homeDir) {
     const found = searchDir(root, name);
     if (found) return found;
   }
+
+  // Only short-circuit the (expensive) plugin-cache walk once the cheap
+  // project/user directory searches above have both come up empty. A real
+  // on-disk file — even one that happens to share a built-in's name, e.g. a
+  // user-defined `claude.md` — must always be found, never silently skipped.
+  if (!pluginQualifier && BUILTIN_AGENT_TYPES.has(name.toLowerCase())) return null;
 
   if (home) {
     const found = findInPluginCache(join(home, '.claude', 'plugins', 'cache'), name, pluginQualifier);

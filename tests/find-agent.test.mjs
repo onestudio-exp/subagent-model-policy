@@ -122,6 +122,32 @@ test('a plugin-qualified name sharing a built-in\'s name is not short-circuited 
   assert.equal(got?.model, 'haiku', 'a plugin: qualified lookup must still resolve normally, even for a built-in-like name');
 });
 
+test('a project-scope agent file named after a built-in resolves normally, not short-circuited', () => {
+  const root = tmp();
+  const home = tmp();
+  writeAgent(root, '.claude/agents', 'claude', 'name: claude\nmodel: haiku');
+  const got = readAgentPolicy('claude', root, home);
+  assert.notEqual(got, null, 'a real on-disk file must win over the built-in short-circuit');
+  assert.deepEqual({ model: got.model, pinned: got.pinned }, { model: 'haiku', pinned: false });
+  assert.ok(got.path, 'path must be populated, never a partial object');
+});
+
+test('a user-scope agent file named after a built-in resolves normally, not short-circuited', () => {
+  const root = tmp();
+  const home = tmp();
+  writeAgent(home, '.claude/agents', 'Plan', 'name: Plan\nmodel: haiku');
+  const got = readAgentPolicy('Plan', root, home);
+  assert.notEqual(got, null, 'a real on-disk file must win over the built-in short-circuit');
+  assert.deepEqual({ model: got.model, pinned: got.pinned }, { model: 'haiku', pinned: false });
+  assert.ok(got.path, 'path must be populated, never a partial object');
+});
+
+test('a built-in name with no file anywhere still returns null', () => {
+  const root = tmp();
+  const home = tmp();
+  assert.equal(readAgentPolicy('claude', root, home), null);
+});
+
 test('a blank or non-string subagent type returns null without throwing', () => {
   const root = tmp();
   assert.equal(readAgentPolicy('', root, root), null);
