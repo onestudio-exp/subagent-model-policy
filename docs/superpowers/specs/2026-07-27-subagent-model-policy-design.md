@@ -206,9 +206,62 @@ modelFromTranscript(input.transcript_path)   // ground truth at dispatch time
   // still nothing? -> fail open, emit nothing
 ```
 
-Preferring the transcript fixes four cases the cache cannot: sessions started with
-`--model`, mid-session `/model` switches (which fire no `SessionStart`), forked
-sessions, and model values like `opusplan` that no single alias can represent.
+Preferring the transcript fixes three cases the cache cannot: mid-session `/model`
+switches (which fire no `SessionStart`), forked sessions, and any session where
+`settings.json` disagrees with reality — **from the second assistant turn onward.**
+
+### Source strength, and why the transcript is not enough
+
+Measured at hook fire time on the **first** tool call of a session:
+
+```json
+{"tool":"Agent","tp_present":true,"exists":true,"bytes":49038,"assistantModels":[]}
+```
+
+The transcript file exists and has content, but carries **no assistant turn yet** —
+those are flushed after the turn completes. So on the first dispatch of a session,
+rung 2 cannot answer either, and resolution falls to `settings.json` exactly as
+before. Most subagents are dispatched on turn one. The transcript fix alone does
+not close the hole.
+
+Since the session model cannot always be known when the decision must be made,
+each source carries a **strength**, and the strength governs what the hook is
+allowed to do:
+
+| Source | Strength | Why |
+| --- | --- | --- |
+| `transcript` | **strong** | The model the session demonstrably just used |
+| `session-start` | **strong** | Claude Code's own report of the session's model |
+| `settings` | **weak** | Configuration, not observation. Stale under `--model` and `/model` |
+
+**The rule: a weak source may never downgrade.**
+
+The harm this plugin exists to prevent is a subagent silently running on a
+*cheaper* model than intended. Every failure mode found in review was a
+downgrade. So when the session model is known only from a weak source, the hook
+rewrites only if doing so does not move the subagent to a cheaper model:
+
+```
+rank: opus (3) > sonnet (2) > haiku (1)
+
+strong source -> rewrite whenever effective !== session model
+weak source   -> rewrite only if rank(session) >= rank(effective)
+```
+
+A `sonnet` agent in a session `settings.json` calls `opus` is still upgraded —
+that is the actual use case, and it remains covered. An agent deliberately
+declaring `opus` when `settings.json` says `sonnet` is now **left alone**, because
+the plugin cannot prove the session is really on sonnet and being wrong there
+causes the exact harm it was built to prevent.
+
+`fable` is deliberately **unranked**: it is a different kind of model, not a
+cheaper or dearer one. If either side of a weak-source comparison is `fable`, the
+hook does nothing. Guessing an ordering there would be inventing a claim.
+
+This makes the plugin incapable of causing a downgrade it cannot justify, at the
+cost of declining some legitimate rewrites on turn one. That trade is deliberate:
+a policy that occasionally does nothing is strictly better than one that
+occasionally does harm, because the harm is invisible to the person it happens to.
 
 **Within either moment, the ladder stops at the first source that yields a usable
 value.** Sources are tried in order; the first success wins and the rest are not
