@@ -14,12 +14,22 @@ test('plugin.json declares the plugin name and version', () => {
   assert.ok(plugin.description.length > 20);
 });
 
+test('plugin.json declares an author name — README claims MIT © OneStudio', () => {
+  const plugin = readJson('.claude-plugin/plugin.json');
+  assert.equal(plugin.author?.name, 'OneStudio');
+});
+
 test('marketplace.json points at this directory as the plugin source', () => {
   const market = readJson('.claude-plugin/marketplace.json');
   assert.equal(market.name, 'subagent-model-policy');
   assert.equal(market.plugins.length, 1);
   assert.equal(market.plugins[0].name, 'subagent-model-policy');
   assert.equal(market.plugins[0].source, './');
+});
+
+test('marketplace.json declares an owner name — required by /plugin marketplace add', () => {
+  const market = readJson('.claude-plugin/marketplace.json');
+  assert.equal(market.owner?.name, 'OneStudio');
 });
 
 test('package.json is ESM with a test script', () => {
