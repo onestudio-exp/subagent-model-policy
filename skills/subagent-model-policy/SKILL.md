@@ -36,6 +36,13 @@ Agent(Explore)
   ↳ model policy: sonnet → opus (inherit)
 ```
 
+When the session model can only be inferred from `settings.json` — not
+observed from the session's own report or the transcript — that evidence is
+weaker, since `settings.json` goes stale under `--model` and `/model`. In
+that case the hook still upgrades an agent that declares a cheaper model,
+but it will never rewrite a declaration to something cheaper on that
+evidence alone.
+
 ## Pinning an agent
 
 When an agent genuinely should run on its own model — mechanical, high-volume,

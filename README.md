@@ -33,6 +33,14 @@ Agent(Explore)
   ↳ model policy: sonnet → opus (inherit)
 ```
 
+Sometimes the session model can only be inferred from `settings.json` rather
+than observed directly (the session's own report, or the transcript). That
+inference is weaker — `settings.json` goes stale under `--model` and
+`/model` — so in that case the policy still **upgrades** an agent that
+declares a cheaper model, but it will never rewrite a declaration to
+something cheaper on that evidence alone. A downgrade it caused would be the
+exact harm this plugin exists to prevent.
+
 ## Install
 
 ```
