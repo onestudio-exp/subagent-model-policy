@@ -13,6 +13,13 @@ function writeAgent(root, scopeRel, name, frontmatter) {
   writeFileSync(join(dir, `${name}.md`), `---\n${frontmatter}\n---\n\nBody text.\n`);
 }
 
+// Plugin cache layout: <home>/.claude/plugins/cache/<marketplace>/<plugin>/<version>/<kind>/<name>.md
+function writePluginFile(home, marketplace, plugin, version, kind, name, frontmatter) {
+  const dir = join(home, '.claude', 'plugins', 'cache', marketplace, plugin, version, kind);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${name}.md`), `---\n${frontmatter}\n---\n\nBody text.\n`);
+}
+
 test('parseFrontmatter reads key/value pairs and strips trailing comments', () => {
   const fm = parseFrontmatter('---\nname: x\nmodel: haiku   # deliberate\n---\nbody');
   assert.equal(fm.name, 'x');
@@ -99,4 +106,42 @@ test('a blank or non-string subagent type returns null without throwing', () => 
   const root = tmp();
   assert.equal(readAgentPolicy('', root, root), null);
   assert.equal(readAgentPolicy(undefined, root, root), null);
+});
+
+// --- Plugin cache scope (spec §7, scope 3) ---------------------------------
+
+test('plugin scope: an agent under a plugin cache agents/ directory resolves', () => {
+  const root = tmp();
+  const home = tmp();
+  writePluginFile(home, 'marketplace-a', 'plugin-a', '1.0.0', 'agents', 'reviewer', 'name: reviewer\nmodel: opus');
+  const got = readAgentPolicy('reviewer', root, home);
+  assert.equal(got.model, 'opus');
+});
+
+test('plugin scope: a same-named file under commands/ is never mistaken for the one under agents/', () => {
+  const root = tmp();
+  const home = tmp();
+  writePluginFile(home, 'marketplace-a', 'plugin-a', '1.0.0', 'commands', 'reviewer', 'name: reviewer-command\nmodel: opus');
+  assert.equal(readAgentPolicy('reviewer', root, home), null, 'a commands/ file alone must never be read as an agent');
+
+  writePluginFile(home, 'marketplace-a', 'plugin-a', '1.0.0', 'agents', 'reviewer', 'name: reviewer\nmodel: haiku');
+  const got = readAgentPolicy('reviewer', root, home);
+  assert.equal(got.model, 'haiku', 'the commands/ file must not shadow the agents/ one once both exist');
+});
+
+test('plugin scope: a plugin-qualified lookup resolves to that plugin, not a same-named agent in another plugin', () => {
+  const root = tmp();
+  const home = tmp();
+  writePluginFile(home, 'marketplace-a', 'plugin-a', '1.0.0', 'agents', 'scanner', 'name: scanner\nmodel: haiku');
+  writePluginFile(home, 'marketplace-a', 'plugin-b', '1.0.0', 'agents', 'scanner', 'name: scanner\nmodel: opus');
+
+  assert.equal(readAgentPolicy('plugin-a:scanner', root, home).model, 'haiku');
+  assert.equal(readAgentPolicy('plugin-b:scanner', root, home).model, 'opus');
+});
+
+test('plugin scope: a bare, unqualified name resolves when it exists only in the plugin cache', () => {
+  const root = tmp();
+  const home = tmp();
+  writePluginFile(home, 'marketplace-a', 'solo-plugin', '2.0.0', 'agents', 'lonely', 'name: lonely\nmodel: sonnet');
+  assert.equal(readAgentPolicy('lonely', root, home).model, 'sonnet');
 });

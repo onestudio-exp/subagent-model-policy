@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { normalizeModel } from './resolve-model.mjs';
@@ -26,18 +26,25 @@ export function parseFrontmatter(text) {
   return out;
 }
 
-/** Recursively collect `<name>.md` under a directory. */
+/**
+ * Bound on recursive directory descent. The plugin cache nests several
+ * levels before reaching an `agents/` folder
+ * (`<marketplace>/<plugin>/<version>/agents/...`), so this must cover that
+ * plus any subdirectories within `agents/` itself.
+ */
+const MAX_SEARCH_DEPTH = 8;
+
+/** Recursively find the first `<name>.md` under a directory. */
 function searchDir(dir, name, depth = 0) {
-  if (depth > 6 || !existsSync(dir)) return null;
+  if (depth > MAX_SEARCH_DEPTH) return null;
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
   } catch {
-    return null;
+    return null; // missing, unreadable, or not a directory
   }
   for (const entry of entries) {
-    const full = join(dir, entry.name);
-    if (entry.isFile() && entry.name === `${name}.md`) return full;
+    if (entry.isFile() && entry.name === `${name}.md`) return join(dir, entry.name);
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
@@ -48,27 +55,105 @@ function searchDir(dir, name, depth = 0) {
 }
 
 /**
+ * Recursively collect every `<name>.md` found under a literal `agents` path
+ * segment beneath `dir`. The plugin cache holds `agents/`, `commands/`,
+ * `skills/`, `hooks/` and docs side by side (spec §7), so a same-named file
+ * elsewhere (e.g. `commands/review.md`) must never be mistaken for
+ * `agents/review.md`.
+ */
+function collectPluginAgentMatches(dir, name, depth, insideAgents, results) {
+  if (depth > MAX_SEARCH_DEPTH) return;
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return; // missing, unreadable, or not a directory
+  }
+  if (insideAgents) {
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name === `${name}.md`) results.push(join(dir, entry.name));
+    }
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const childInsideAgents = insideAgents || entry.name === 'agents';
+    collectPluginAgentMatches(join(dir, entry.name), name, depth + 1, childInsideAgents, results);
+  }
+}
+
+/** True when `segment` appears as a whole path component of `path`. */
+function hasPathSegment(path, segment) {
+  if (!segment) return false;
+  return path.split(/[\\/]+/).includes(segment);
+}
+
+/**
+ * Search the plugin cache for `<name>.md` under an `agents/` directory.
+ * When `pluginQualifier` is given (a `plugin:agent`-style lookup), a match
+ * whose path runs through that plugin's own subtree wins; only when no such
+ * match exists does the search fall back to any `agents/` match at all — so
+ * an explicitly-qualified lookup never resolves to a different plugin's
+ * same-named agent. Cache layout is `<marketplace>/<plugin>/<version>/...`,
+ * so the plugin name is matched as a path segment rather than a fixed depth.
+ */
+function findInPluginCache(root, name, pluginQualifier) {
+  const matches = [];
+  collectPluginAgentMatches(root, name, 0, false, matches);
+  if (matches.length === 0) return null;
+  if (pluginQualifier) {
+    const qualified = matches.find((path) => hasPathSegment(path, pluginQualifier));
+    if (qualified) return qualified;
+  }
+  return matches[0];
+}
+
+/**
+ * `homedir()` is a real production path whenever `homeDir` isn't supplied,
+ * and it can throw if neither `HOME`/`USERPROFILE` nor the OS lookup
+ * resolves. Failing open means treating that as "no user scope available",
+ * never propagating the throw.
+ */
+function safeHomeDir(homeDir) {
+  if (homeDir) return homeDir;
+  try {
+    return homedir();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve a subagent type to its definition file, in Claude Code's own
  * precedence order: project, then user, then plugin cache.
  * Returns null for built-ins, which have no file on disk.
  */
 export function findAgentFile(subagentType, cwd, homeDir) {
   if (typeof subagentType !== 'string' || !subagentType.trim()) return null;
-  // Plugin-scoped names arrive as `plugin:agent`.
-  const name = subagentType.trim().split(':').pop();
-  if (!name) return null;
 
-  const home = homeDir || homedir();
-  const roots = [
+  // Plugin-scoped names arrive as `plugin:agent`; the leading segment
+  // narrows the plugin-cache search, the trailing segment is the filename.
+  const parts = subagentType.trim().split(':');
+  const name = parts[parts.length - 1].trim();
+  if (!name) return null;
+  const pluginQualifier = parts.length > 1 ? parts[0].trim() || null : null;
+
+  const home = safeHomeDir(homeDir);
+
+  const projectAndUserRoots = [
     cwd && join(cwd, '.claude', 'agents'),
-    join(home, '.claude', 'agents'),
-    join(home, '.claude', 'plugins', 'cache'),
+    home && join(home, '.claude', 'agents'),
   ].filter(Boolean);
 
-  for (const root of roots) {
+  for (const root of projectAndUserRoots) {
     const found = searchDir(root, name);
     if (found) return found;
   }
+
+  if (home) {
+    const found = findInPluginCache(join(home, '.claude', 'plugins', 'cache'), name, pluginQualifier);
+    if (found) return found;
+  }
+
   return null;
 }
 

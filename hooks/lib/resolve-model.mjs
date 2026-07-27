@@ -110,10 +110,22 @@ function modelFromTranscript(transcriptPath) {
 
 /** First `model` key found across project then user settings, or null. */
 function modelFromSettings(cwd, homeDir) {
+  // homedir() is a real production path whenever homeDir isn't supplied, and
+  // it can throw if neither HOME/USERPROFILE nor the OS lookup resolves —
+  // fail open by treating that as "no user-scope candidate" rather than
+  // letting the throw propagate.
+  let home = homeDir;
+  if (!home) {
+    try {
+      home = homedir();
+    } catch {
+      home = null;
+    }
+  }
   const candidates = [
     cwd && join(cwd, '.claude', 'settings.local.json'),
     cwd && join(cwd, '.claude', 'settings.json'),
-    join(homeDir || homedir(), '.claude', 'settings.json'),
+    home && join(home, '.claude', 'settings.json'),
   ].filter(Boolean);
 
   for (const path of candidates) {
