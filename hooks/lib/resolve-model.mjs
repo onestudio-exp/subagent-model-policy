@@ -15,6 +15,15 @@ export function normalizeModel(value) {
   const v = value.trim().toLowerCase();
   if (!v) return null;
   if (ALIASES.includes(v)) return v;
+  // A context-window variant suffix (e.g. "sonnet[1m]") names the same
+  // model family, so it collapses to the base alias rather than failing
+  // open. Deliberately narrow: only a bare alias immediately followed by a
+  // bracketed suffix qualifies — "opusplan" and "default" are NOT this
+  // shape and must keep falling through to null below (see spec Fix 2:
+  // "opusplan" means opus-for-planning/sonnet-otherwise and cannot be
+  // honestly collapsed to one alias; "default" names no specific model).
+  const contextWindowVariant = /^([a-z]+)\[[^\]]*\]$/.exec(v);
+  if (contextWindowVariant && ALIASES.includes(contextWindowVariant[1])) return contextWindowVariant[1];
   // Beyond a bare alias, only treat it as a Claude model ID if it says so.
   if (!v.includes('claude')) return null;
   for (const alias of ALIASES) {
